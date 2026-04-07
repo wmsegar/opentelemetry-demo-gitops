@@ -3,8 +3,17 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const https = require('https');
 const crypto = require('crypto');
-const { normalizeFlagsDocument, applyFlagUpdates, serializeFlagsDocument } = require('./lib');
+const {
+  normalizeFlagsDocument,
+  applyFlagUpdates,
+  serializeFlagsDocument,
+  getFlagsReadRef,
+  isPublishableStatus,
+  buildRestartPatch,
+  hasDeploymentRolledOut,
+} = require('./lib');
 
 const appBasePath = normalizeBasePath(process.env.APP_BASE_PATH || '/admin');
 const apiBasePath = `${appBasePath}/api`;
@@ -25,7 +34,13 @@ const config = {
   adminUsername: process.env.ADMIN_UI_USERNAME || '',
   adminPassword: process.env.ADMIN_UI_PASSWORD || '',
   githubToken: process.env.GITHUB_TOKEN || '',
+  clusterNamespace: process.env.CLUSTER_NAMESPACE || 'astroshop',
+  flagdConfigMapName: process.env.FLAGD_CONFIGMAP_NAME || 'flagd-config',
+  flagdDeploymentName: process.env.FLAGD_DEPLOYMENT_NAME || 'flagd',
+  rolloutTimeoutMs: Number(process.env.FLAGD_ROLLOUT_TIMEOUT_MS || '120000'),
 };
+
+let lastPublishResult = null;
 
 const textFiles = new Map([
   [`${appBasePath}`, loadTextFile('index.html')],
@@ -66,6 +81,11 @@ const server = http.createServer(async (request, response) => {
       if (request.method === 'POST' && pathname === `${apiBasePath}/flags/apply`) {
         const body = await readJsonBody(request);
         const payload = await handleApplyFlags(body);
+        return sendJson(response, 200, payload);
+      }
+
+      if (request.method === 'POST' && pathname === `${apiBasePath}/flags/publish`) {
+        const payload = await handlePublish();
         return sendJson(response, 200, payload);
       }
 
@@ -153,7 +173,7 @@ function sendAuthError(response, result) {
 
 async function handleGetFlags() {
   const status = await getStatus();
-  const ref = status.branchExists ? config.githubWorkBranch : config.githubBaseBranch;
+  const ref = getFlagsReadRef(status, config.githubBaseBranch, config.githubWorkBranch);
   const remoteFile = await getRemoteFile(ref);
   return {
     source: {
@@ -168,9 +188,7 @@ async function handleGetFlags() {
 }
 
 async function handleApplyFlags(body) {
-  if (!config.githubToken) {
-    throw new Error('GITHUB_TOKEN must be configured to apply flag changes');
-  }
+  assertGitHubToken();
 
   const updates = body && Array.isArray(body.flags) ? body.flags : null;
   if (!updates) {
@@ -202,6 +220,8 @@ async function handleApplyFlags(body) {
   let pullRequest = status.pullRequest;
   if (!pullRequest) {
     pullRequest = await createPullRequest();
+  } else {
+    pullRequest = await getPullRequestByNumber(pullRequest.number);
   }
 
   return {
@@ -213,6 +233,48 @@ async function handleApplyFlags(body) {
   };
 }
 
+async function handlePublish() {
+  assertGitHubToken();
+
+  const status = await getStatus();
+  if (!status.pullRequest) {
+    throw new Error('There is no open admin PR to publish');
+  }
+  if (!isPublishableStatus(status)) {
+    throw new Error('The open admin PR is not currently mergeable');
+  }
+
+  const mergedPullRequest = await mergePullRequest(status.pullRequest.number);
+  const mergedFile = await getRemoteFile(config.githubBaseBranch);
+  const deployedAt = new Date().toISOString();
+  const deployResult = await deployFlagsDocument(serializeFlagsDocument(mergedFile.document), deployedAt);
+
+  lastPublishResult = {
+    mergedAt: deployedAt,
+    mergeCommitSha: mergedPullRequest.sha,
+    pullRequestNumber: status.pullRequest.number,
+    deployedRef: config.githubBaseBranch,
+    configMapUpdated: deployResult.configMapUpdated,
+    flagdRestarted: deployResult.flagdRestarted,
+    rolloutStatus: deployResult.rolloutStatus,
+    message: 'Merged PR and deployed updated flag configuration',
+  };
+
+  return {
+    pullRequest: {
+      ...status.pullRequest,
+      state: 'closed',
+      merged: true,
+    },
+    mergeCommitSha: mergedPullRequest.sha,
+    deployedRef: config.githubBaseBranch,
+    configMapUpdated: deployResult.configMapUpdated,
+    flagdRestarted: deployResult.flagdRestarted,
+    rolloutStatus: deployResult.rolloutStatus,
+    message: 'Merged PR and deployed updated flag configuration',
+  };
+}
+
 async function getStatus() {
   const branch = await getBranch(config.githubWorkBranch);
   const pullRequest = await getOpenPullRequest();
@@ -221,6 +283,8 @@ async function getStatus() {
     branch: branch ? { name: config.githubWorkBranch, sha: branch.object.sha } : null,
     pullRequest,
     baseBranch: config.githubBaseBranch,
+    publishReady: isPublishableStatus({ pullRequest }),
+    lastPublishResult,
   };
 }
 
@@ -290,12 +354,24 @@ async function getOpenPullRequest() {
     return null;
   }
 
-  return {
-    number: pullRequest.number,
-    url: pullRequest.html_url,
-    title: pullRequest.title,
-    state: pullRequest.state,
-  };
+  return getPullRequestByNumber(pullRequest.number);
+}
+
+async function getPullRequestByNumber(number) {
+  const pullRequest = await waitForPullRequestDetails(number);
+  return toPullRequestSummary(pullRequest);
+}
+
+async function waitForPullRequestDetails(number) {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const pullRequest = await githubFetch(`/pulls/${number}`);
+    if (pullRequest.mergeable !== null || attempt === 3) {
+      return pullRequest;
+    }
+    await sleep(1000);
+  }
+
+  throw new Error(`Unable to load pull request #${number}`);
 }
 
 async function createPullRequest() {
@@ -309,12 +385,146 @@ async function createPullRequest() {
     }),
   });
 
+  return toPullRequestSummary(response);
+}
+
+async function mergePullRequest(number) {
+  try {
+    return await githubFetch(`/pulls/${number}/merge`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        merge_method: 'merge',
+      }),
+    });
+  } catch (error) {
+    throw new Error(`Failed to merge PR #${number}: ${error.message}`);
+  }
+}
+
+function toPullRequestSummary(pullRequest) {
   return {
-    number: response.number,
-    url: response.html_url,
-    title: response.title,
-    state: response.state,
+    number: pullRequest.number,
+    url: pullRequest.html_url,
+    title: pullRequest.title,
+    state: pullRequest.state,
+    mergeable: pullRequest.mergeable,
+    mergeableState: pullRequest.mergeable_state || 'unknown',
   };
+}
+
+function assertGitHubToken() {
+  if (!config.githubToken) {
+    throw new Error('GITHUB_TOKEN must be configured for GitHub operations');
+  }
+}
+
+async function deployFlagsDocument(serializedDocument, restartTimestamp) {
+  await kubePatch(
+    `/api/v1/namespaces/${encodeURIComponent(config.clusterNamespace)}/configmaps/${encodeURIComponent(
+      config.flagdConfigMapName,
+    )}`,
+    {
+      data: {
+        'demo.flagd.json': serializedDocument,
+      },
+    },
+  );
+
+  const patchedDeployment = await kubePatch(
+    `/apis/apps/v1/namespaces/${encodeURIComponent(config.clusterNamespace)}/deployments/${encodeURIComponent(
+      config.flagdDeploymentName,
+    )}`,
+    buildRestartPatch(restartTimestamp),
+  );
+
+  const rolloutStatus = await waitForDeploymentRollout(
+    patchedDeployment.metadata.generation,
+    restartTimestamp,
+  );
+
+  return {
+    configMapUpdated: true,
+    flagdRestarted: true,
+    rolloutStatus,
+  };
+}
+
+async function waitForDeploymentRollout(targetGeneration, restartTimestamp) {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < config.rolloutTimeoutMs) {
+    const deployment = await kubeGet(
+      `/apis/apps/v1/namespaces/${encodeURIComponent(config.clusterNamespace)}/deployments/${encodeURIComponent(
+        config.flagdDeploymentName,
+      )}`,
+    );
+
+    const annotations =
+      (((deployment || {}).spec || {}).template || {}).metadata?.annotations || {};
+    const observedRestart = annotations['astroshop.demo/restartedAt'];
+
+    if (
+      observedRestart === restartTimestamp &&
+      deployment.metadata.generation >= targetGeneration &&
+      hasDeploymentRolledOut(deployment)
+    ) {
+      return {
+        ready: true,
+        observedGeneration: deployment.status.observedGeneration,
+        generation: deployment.metadata.generation,
+        availableReplicas: deployment.status.availableReplicas || 0,
+        updatedReplicas: deployment.status.updatedReplicas || 0,
+      };
+    }
+
+    await sleep(2000);
+  }
+
+  throw new Error(`Timed out waiting for deployment ${config.flagdDeploymentName} to roll out`);
+}
+
+async function kubeGet(pathname) {
+  return kubeRequest(pathname, { method: 'GET' });
+}
+
+async function kubePatch(pathname, body) {
+  return kubeRequest(pathname, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/merge-patch+json',
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+async function kubeRequest(pathname, options = {}) {
+  const tokenPath = '/var/run/secrets/kubernetes.io/serviceaccount/token';
+  const caPath = '/var/run/secrets/kubernetes.io/serviceaccount/ca.crt';
+
+  if (!fs.existsSync(tokenPath) || !fs.existsSync(caPath)) {
+    throw new Error('Kubernetes service account credentials are not available');
+  }
+
+  const token = fs.readFileSync(tokenPath, 'utf8').trim();
+  const ca = fs.readFileSync(caPath);
+
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    Accept: 'application/json',
+    ...(options.headers || {}),
+  };
+
+  const response = await requestJson({
+    hostname: 'kubernetes.default.svc',
+    port: 443,
+    method: options.method || 'GET',
+    path: pathname,
+    headers,
+    ca,
+    body: options.body,
+  });
+
+  return response;
 }
 
 async function githubFetch(pathname, options = {}) {
@@ -329,23 +539,53 @@ async function githubFetch(pathname, options = {}) {
     headers.Authorization = `Bearer ${config.githubToken}`;
   }
 
-  const response = await fetch(
-    `https://api.github.com/repos/${config.githubOwner}/${config.githubRepo}${pathname}`,
-    {
-      method: options.method || 'GET',
-      headers,
-      body: options.body,
-    },
-  );
+  return requestJson({
+    hostname: 'api.github.com',
+    port: 443,
+    method: options.method || 'GET',
+    path: `/repos/${config.githubOwner}/${config.githubRepo}${pathname}`,
+    headers,
+    body: options.body,
+  });
+}
 
-  const text = await response.text();
-  const data = text ? JSON.parse(text) : null;
-  if (!response.ok) {
-    const error = new Error((data && data.message) || `GitHub request failed with ${response.status}`);
-    error.statusCode = response.status;
-    throw error;
-  }
-  return data;
+function requestJson(options) {
+  return new Promise((resolve, reject) => {
+    const request = https.request(
+      {
+        hostname: options.hostname,
+        port: options.port,
+        method: options.method,
+        path: options.path,
+        headers: options.headers,
+        ca: options.ca,
+      },
+      (response) => {
+        const chunks = [];
+        response.on('data', (chunk) => chunks.push(chunk));
+        response.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8');
+          const data = text ? JSON.parse(text) : null;
+          if (response.statusCode >= 200 && response.statusCode < 300) {
+            resolve(data);
+            return;
+          }
+
+          const error = new Error(
+            (data && data.message) || `Request failed with status ${response.statusCode}`,
+          );
+          error.statusCode = response.statusCode;
+          reject(error);
+        });
+      },
+    );
+
+    request.on('error', reject);
+    if (options.body) {
+      request.write(options.body);
+    }
+    request.end();
+  });
 }
 
 function encodePath(filePath) {
@@ -368,6 +608,12 @@ function readJsonBody(request) {
       }
     });
     request.on('error', reject);
+  });
+}
+
+function sleep(milliseconds) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
   });
 }
 

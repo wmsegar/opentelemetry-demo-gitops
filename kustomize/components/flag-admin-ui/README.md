@@ -22,4 +22,16 @@ Required values:
 
 - `authUsername` - basic auth username for the admin UI
 - `authPassword` - basic auth password for the admin UI
-- `githubToken` - GitHub token with repo access to the target fork
+- `githubToken` - GitHub token with repo access to the target fork, including PR creation and merge permissions
+
+## Publish behavior
+
+The admin UI now supports two actions:
+
+- `Save changes` creates or updates a PR on `admin/flag-toggles`
+- `Publish` merges the PR into the fork's `main`, updates the live `flagd-config` ConfigMap, and restarts the `flagd` deployment in `astroshop`
+
+The component ships a dedicated service account and namespace-scoped RBAC so the admin service can update only:
+
+- `ConfigMap/flagd-config`
+- `Deployment/flagd`

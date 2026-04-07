@@ -85,7 +85,8 @@ The UI:
 
 - reads `kustomize/components/flagd-config/demo.flagd.json` from your fork
 - allows trusted admins to toggle supported boolean scenarios
-- creates or updates a PR on the `admin/flag-toggles` branch instead of mutating the live cluster directly
+- saves draft changes by creating or updating a PR on the `admin/flag-toggles` branch
+- publishes changes by merging that PR and updating `flagd-config` plus restarting `flagd` in the live cluster
 
 # Flagd configuration change: problem patterns
 

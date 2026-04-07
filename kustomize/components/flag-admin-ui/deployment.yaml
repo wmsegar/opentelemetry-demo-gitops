@@ -17,6 +17,7 @@ spec:
         app.kubernetes.io/name: flag-admin-ui
         app.kubernetes.io/component: admin
     spec:
+      serviceAccountName: flag-admin-ui
       containers:
         - name: flag-admin-ui
           image: node:20-alpine
@@ -43,6 +44,14 @@ spec:
               value: Admin UI feature flag updates
             - name: GITHUB_PR_BODY
               value: This PR was created by the Astroshop feature flag admin UI to update demo flag defaults.
+            - name: CLUSTER_NAMESPACE
+              value: astroshop
+            - name: FLAGD_CONFIGMAP_NAME
+              value: flagd-config
+            - name: FLAGD_DEPLOYMENT_NAME
+              value: flagd
+            - name: FLAGD_ROLLOUT_TIMEOUT_MS
+              value: "120000"
             - name: ADMIN_UI_USERNAME
               valueFrom:
                 secretKeyRef:

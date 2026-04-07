@@ -19,11 +19,21 @@
       <section class="panel panel-status">
         <div>
           <h2>Branch status</h2>
-          <p id="branch-status-text">Loading current branch state…</p>
+          <p id="branch-status-text">Loading current branch state...</p>
         </div>
-        <a id="pr-link" class="link-button hidden" href="#" target="_blank" rel="noreferrer">
-          Open pull request
-        </a>
+        <div class="status-actions">
+          <a id="pr-link" class="link-button hidden" href="#" target="_blank" rel="noreferrer">
+            Open pull request
+          </a>
+          <button id="publish-button" class="secondary-button" disabled>Publish to Cluster</button>
+        </div>
+      </section>
+
+      <section class="panel panel-status hidden" id="publish-result-panel">
+        <div>
+          <h2>Last publish</h2>
+          <p id="publish-result-text">No publish has run yet.</p>
+        </div>
       </section>
 
       <section class="panel">
