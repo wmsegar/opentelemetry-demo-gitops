@@ -2,7 +2,15 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeFlagsDocument, applyFlagUpdates, serializeFlagsDocument } = require('./lib');
+const {
+  normalizeFlagsDocument,
+  applyFlagUpdates,
+  serializeFlagsDocument,
+  getFlagsReadRef,
+  isPublishableStatus,
+  buildRestartPatch,
+  hasDeploymentRolledOut,
+} = require('./lib');
 
 function buildDocument() {
   return {
@@ -61,4 +69,60 @@ test('applyFlagUpdates rejects unsupported flag shapes', () => {
 test('serializeFlagsDocument preserves trailing newline', () => {
   const serialized = serializeFlagsDocument(buildDocument());
   assert.match(serialized, /\n$/);
+});
+
+test('getFlagsReadRef prefers work branch only when a PR is open', () => {
+  assert.equal(getFlagsReadRef({ pullRequest: null }, 'main', 'admin/flag-toggles'), 'main');
+  assert.equal(
+    getFlagsReadRef({ pullRequest: { number: 1 } }, 'main', 'admin/flag-toggles'),
+    'admin/flag-toggles',
+  );
+});
+
+test('isPublishableStatus requires an open mergeable PR', () => {
+  assert.equal(isPublishableStatus({ pullRequest: null }), false);
+  assert.equal(
+    isPublishableStatus({ pullRequest: { mergeable: false, mergeableState: 'dirty' } }),
+    false,
+  );
+  assert.equal(
+    isPublishableStatus({ pullRequest: { mergeable: true, mergeableState: 'clean' } }),
+    true,
+  );
+});
+
+test('buildRestartPatch creates a deployment annotation patch', () => {
+  const patch = buildRestartPatch('2026-04-07T12:00:00.000Z');
+  assert.equal(
+    patch.spec.template.metadata.annotations['astroshop.demo/restartedAt'],
+    '2026-04-07T12:00:00.000Z',
+  );
+});
+
+test('hasDeploymentRolledOut recognizes ready deployments', () => {
+  assert.equal(
+    hasDeploymentRolledOut({
+      metadata: { generation: 2 },
+      spec: { replicas: 1 },
+      status: {
+        observedGeneration: 2,
+        updatedReplicas: 1,
+        availableReplicas: 1,
+      },
+    }),
+    true,
+  );
+
+  assert.equal(
+    hasDeploymentRolledOut({
+      metadata: { generation: 2 },
+      spec: { replicas: 1 },
+      status: {
+        observedGeneration: 1,
+        updatedReplicas: 1,
+        availableReplicas: 1,
+      },
+    }),
+    false,
+  );
 });

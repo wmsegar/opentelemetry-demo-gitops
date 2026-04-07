@@ -4,6 +4,9 @@ kind: Component
 resources:
   - deployment.yaml
   - service.yaml
+  - serviceaccount.yaml
+  - role.yaml
+  - rolebinding.yaml
 
 configMapGenerator:
   - name: flag-admin-ui-app

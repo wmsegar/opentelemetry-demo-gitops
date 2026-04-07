@@ -80,8 +80,60 @@ function serializeFlagsDocument(document) {
   return `${JSON.stringify(document, null, 2)}\n`;
 }
 
+function getFlagsReadRef(status, baseBranch, workBranch) {
+  return status && status.pullRequest ? workBranch : baseBranch;
+}
+
+function isPublishableStatus(status) {
+  if (!status || !status.pullRequest) {
+    return false;
+  }
+
+  const mergeable = status.pullRequest.mergeable;
+  if (mergeable === false) {
+    return false;
+  }
+
+  const mergeState = status.pullRequest.mergeableState;
+  return mergeState !== 'dirty' && mergeState !== 'unknown';
+}
+
+function buildRestartPatch(timestamp) {
+  return {
+    spec: {
+      template: {
+        metadata: {
+          annotations: {
+            'astroshop.demo/restartedAt': timestamp,
+          },
+        },
+      },
+    },
+  };
+}
+
+function hasDeploymentRolledOut(deployment) {
+  if (!deployment || !deployment.spec || !deployment.status || !deployment.metadata) {
+    return false;
+  }
+
+  const desiredReplicas = deployment.spec.replicas ?? 1;
+  const observedGeneration = deployment.status.observedGeneration ?? 0;
+  const generation = deployment.metadata.generation ?? 0;
+
+  return (
+    observedGeneration >= generation &&
+    (deployment.status.updatedReplicas ?? 0) >= desiredReplicas &&
+    (deployment.status.availableReplicas ?? 0) >= desiredReplicas
+  );
+}
+
 module.exports = {
   applyFlagUpdates,
+  buildRestartPatch,
+  getFlagsReadRef,
+  hasDeploymentRolledOut,
+  isPublishableStatus,
   isBooleanToggleFlag,
   normalizeFlagsDocument,
   serializeFlagsDocument,

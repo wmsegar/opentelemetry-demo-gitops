@@ -1,14 +1,19 @@
 const state = {
   flags: [],
   draft: new Map(),
+  branchStatus: null,
+  busy: false,
 };
 
 const elements = {
   flags: document.getElementById('flags'),
   saveButton: document.getElementById('save-button'),
+  publishButton: document.getElementById('publish-button'),
   message: document.getElementById('message'),
   prLink: document.getElementById('pr-link'),
   branchStatusText: document.getElementById('branch-status-text'),
+  publishResultPanel: document.getElementById('publish-result-panel'),
+  publishResultText: document.getElementById('publish-result-text'),
 };
 
 initialize().catch((error) => {
@@ -18,6 +23,7 @@ initialize().catch((error) => {
 async function initialize() {
   await refresh();
   elements.saveButton.addEventListener('click', saveChanges);
+  elements.publishButton.addEventListener('click', publishChanges);
 }
 
 async function refresh() {
@@ -28,23 +34,32 @@ async function refresh() {
   }
 
   state.flags = payload.flags;
+  state.branchStatus = payload.branchStatus;
   state.draft = new Map(payload.flags.map((flag) => [flag.flagKey, flag.enabled]));
   renderStatus(payload.branchStatus);
   renderFlags();
-  updateSaveState();
+  updateActionState();
 }
 
 function renderStatus(status) {
   if (status.pullRequest) {
-    elements.branchStatusText.textContent = `Working branch ${status.branch.name} has an open PR #${status.pullRequest.number}. New saves will update that PR.`;
+    const mergeability = status.publishReady ? 'ready to publish' : 'not ready to publish';
+    elements.branchStatusText.textContent = `Working branch ${status.branch.name} has an open PR #${status.pullRequest.number} and is currently ${mergeability}.`;
     elements.prLink.href = status.pullRequest.url;
     elements.prLink.classList.remove('hidden');
   } else if (status.branchExists && status.branch) {
-    elements.branchStatusText.textContent = `Working branch ${status.branch.name} exists but does not currently have an open PR.`;
+    elements.branchStatusText.textContent = `Working branch ${status.branch.name} exists but does not currently have an open PR. Save a flag change to open a new one.`;
     elements.prLink.classList.add('hidden');
   } else {
-    elements.branchStatusText.textContent = `No admin branch exists yet. Your first save will create a reusable admin branch and open a PR in the fork.`;
+    elements.branchStatusText.textContent = 'No admin branch exists yet. Your first save will create a reusable admin branch and open a PR in the fork.';
     elements.prLink.classList.add('hidden');
+  }
+
+  if (status.lastPublishResult) {
+    elements.publishResultPanel.classList.remove('hidden');
+    elements.publishResultText.textContent = `Merged PR #${status.lastPublishResult.pullRequestNumber} and deployed ${status.lastPublishResult.deployedRef} at ${status.lastPublishResult.mergedAt}.`;
+  } else {
+    elements.publishResultPanel.classList.add('hidden');
   }
 }
 
@@ -66,7 +81,7 @@ function renderFlags() {
 
     const meta = document.createElement('p');
     meta.className = 'flag-meta';
-    meta.textContent = `State: ${flag.state} • Default variant: ${flag.defaultVariant}`;
+    meta.textContent = `State: ${flag.state} | Default variant: ${flag.defaultVariant}`;
     article.appendChild(meta);
 
     const controls = document.createElement('div');
@@ -78,11 +93,11 @@ function renderFlags() {
     const input = document.createElement('input');
     input.type = 'checkbox';
     input.checked = state.draft.get(flag.flagKey);
-    input.disabled = !flag.supported;
+    input.disabled = !flag.supported || state.busy;
     input.addEventListener('change', () => {
       state.draft.set(flag.flagKey, input.checked);
       valueText.textContent = input.checked ? 'On' : 'Off';
-      updateSaveState();
+      updateActionState();
     });
 
     const slider = document.createElement('span');
@@ -109,11 +124,20 @@ function renderFlags() {
   }
 }
 
-function updateSaveState() {
+function updateActionState() {
   const changedCount = getChangedFlags().length;
-  elements.saveButton.disabled = changedCount === 0;
+  elements.saveButton.disabled = state.busy || changedCount === 0;
   elements.saveButton.textContent =
     changedCount === 0 ? 'Save changes' : `Save ${changedCount} change${changedCount === 1 ? '' : 's'}`;
+
+  const publishReady =
+    state.branchStatus &&
+    state.branchStatus.publishReady &&
+    state.branchStatus.pullRequest &&
+    changedCount === 0 &&
+    !state.busy;
+  elements.publishButton.disabled = !publishReady;
+  elements.publishButton.textContent = publishReady ? 'Merge + Deploy' : 'Publish to Cluster';
 }
 
 function getChangedFlags() {
@@ -132,8 +156,9 @@ async function saveChanges() {
     return;
   }
 
-  elements.saveButton.disabled = true;
-  showMessage('Saving changes through GitHub…', 'info');
+  state.busy = true;
+  updateActionState();
+  showMessage('Saving changes through GitHub...', 'info');
 
   try {
     const response = await fetch('/admin/api/flags/apply', {
@@ -157,7 +182,47 @@ async function saveChanges() {
     await refresh();
   } catch (error) {
     showMessage(error.message || 'Failed to save changes', 'error');
-    updateSaveState();
+  } finally {
+    state.busy = false;
+    renderFlags();
+    updateActionState();
+  }
+}
+
+async function publishChanges() {
+  if (!state.branchStatus || !state.branchStatus.pullRequest) {
+    return;
+  }
+
+  state.busy = true;
+  updateActionState();
+  renderFlags();
+  showMessage('Publishing changes: merging PR, deploying config, and restarting flagd...', 'info');
+
+  try {
+    const response = await fetch('/admin/api/flags/publish', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.error || 'Failed to publish changes');
+    }
+
+    showMessage(
+      `Published successfully. PR #${payload.pullRequest.number} merged and cluster updated from ${payload.deployedRef}.`,
+      'success',
+    );
+    await refresh();
+  } catch (error) {
+    showMessage(error.message || 'Failed to publish changes', 'error');
+  } finally {
+    state.busy = false;
+    renderFlags();
+    updateActionState();
   }
 }
 
