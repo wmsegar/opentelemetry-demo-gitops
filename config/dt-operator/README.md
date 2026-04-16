@@ -6,9 +6,9 @@ You can deploy Dynatrace operator following official [guide](https://docs.dynatr
 ./deploy
 ```
 
-You need to set these env vars before deployment
+Create a local ignored `dynatrace.local.env` file at the repo root before deployment.
 
-- CLUSTER_NAME - the name of the cluster displayed in the tenant
-- CLUSTER_API_URL - url of the tenant including the `/api`, e.g. **https://wkf10640.live.dynatrace.com/api**
-- OPERATOR_TOKEN - access token using the `Kubernetes: Dynatrace Operator` template
-- DATA_INGEST_TOKEN - access token using the `Kubernetes: Data Ingest` template
+- `DT_OPERATOR_SECRET_NAME` - the secret name referenced by the `DynaKube` resource, e.g. `astroshop`
+- `DT_OPERATOR_API_URL` - url of the tenant including `/api`, e.g. **https://wkf10640.live.dynatrace.com/api**
+- `DT_OPERATOR_API_TOKEN` - access token using the `Kubernetes: Dynatrace Operator` template
+- `DT_OPERATOR_DATA_INGEST_TOKEN` - access token using the `Kubernetes: Data Ingest` template

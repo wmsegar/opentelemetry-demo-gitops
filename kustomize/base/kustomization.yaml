@@ -12,6 +12,14 @@ helmCharts:
 
 namespace: astroshop
 
+generatorOptions:
+  disableNameSuffixHash: true
+
+secretGenerator:
+  - name: otel-collector-dt-credentials
+    envs:
+      - otel-collector-dt-credentials.env
+
 resources:
   - ./namespace.yaml
   - ./ingress-class-params.yaml

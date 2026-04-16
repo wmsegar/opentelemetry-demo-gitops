@@ -29,26 +29,45 @@ If you want to deploy the ingress resources (by setting `components.ingress.enab
 
 ### Helm deployment
 
-To deploy the helm chart you will first need to set the required values in a local override file.
+To deploy the helm chart you will first need to set the required values in local ignored files.
 
 Use [kustomize/base/values.yaml](./kustomize/base/values.yaml) as the checked-in template and create a local `kustomize/base/values.local.yaml` file with your real environment-specific values. The local file is ignored by git and loaded after `values.yaml` during deployment.
 
 You can check the possible values [here](./charts/astroshop/values.yaml)
 
-- _components.dt-credentials.tenantEndpoint_ - tenant url including the `/api/v2/otlp`, e.g. **https://wkf10640.live.dynatrace.com/api/v2/otlp**
-- _components.dt-credentials.tenantToken_ - access token using the `Kubernetes: Data Ingest` template
+Dynatrace credentials for both the Operator and the Astroshop OTEL collector now come from one shared local ignored env file:
+
+- `dynatrace.local.env`
+- Required keys:
+  - `DT_OPERATOR_SECRET_NAME` - Kubernetes secret name used by the Dynatrace Operator, e.g. `astroshop`
+  - `DT_OPERATOR_API_URL` - tenant url including `/api`, e.g. `https://wkf10640.live.dynatrace.com/api`
+  - `DT_OPERATOR_API_TOKEN` - access token using the `Kubernetes: Dynatrace Operator` template
+  - `DT_OPERATOR_DATA_INGEST_TOKEN` - access token using the `Kubernetes: Data Ingest` template for the Operator
+  - `ASTROSHOP_OTLP_ENDPOINT` - tenant url including `/api/v2/otlp`
+  - `ASTROSHOP_OTLP_TOKEN` - access token used only by the Astroshop OTEL collector
 
 Example `kustomize/base/values.local.yaml`:
 
 ```yaml
 components:
-  dt-credentials:
-    tenantEndpoint: https://wkf10640.live.dynatrace.com/api/v2/otlp
-    tenantToken: dt0c01.abc.xxx
   flag-admin-ui:
     authUsername: admin
     authPassword: "change-me"
     githubToken: ghp_xxx
+```
+
+Example `dynatrace.local.example.env`:
+
+```dotenv
+# Dynatrace Operator
+DT_OPERATOR_SECRET_NAME=astroshop
+DT_OPERATOR_API_URL=https://wkf10640.live.dynatrace.com/api
+DT_OPERATOR_API_TOKEN=dt0c01.abc.xxx
+DT_OPERATOR_DATA_INGEST_TOKEN=dt0c01.def.xxx
+
+# Astroshop OTEL collector
+ASTROSHOP_OTLP_ENDPOINT=https://wkf10640.live.dynatrace.com/api/v2/otlp
+ASTROSHOP_OTLP_TOKEN=dt0c01.ghi.xxx
 ```
 
 then run

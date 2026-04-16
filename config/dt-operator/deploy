@@ -1,6 +1,29 @@
 #!/bin/bash
 
-CLUSTER_NAME="${CLUSTER_NAME:-"otel-demo-cluster"}"
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
+ENV_FILE="${REPO_ROOT}/dynatrace.local.env"
+
+if [ -f "${ENV_FILE}" ]
+then
+    set -a
+    # shellcheck disable=SC1090
+    . "${ENV_FILE}"
+    set +a
+fi
+
+CLUSTER_NAME="${DT_OPERATOR_SECRET_NAME:-astroshop}"
+CLUSTER_API_URL="${DT_OPERATOR_API_URL:-}"
+OPERATOR_TOKEN="${DT_OPERATOR_API_TOKEN:-}"
+DATA_INGEST_TOKEN="${DT_OPERATOR_DATA_INGEST_TOKEN:-}"
+
+if [ -z "${CLUSTER_API_URL}" ] || [ -z "${OPERATOR_TOKEN}" ] || [ -z "${DATA_INGEST_TOKEN}" ]
+then
+    echo "Missing Dynatrace Operator credentials. Populate dynatrace.local.env with DT_OPERATOR_API_URL, DT_OPERATOR_API_TOKEN, and DT_OPERATOR_DATA_INGEST_TOKEN." >&2
+    exit 1
+fi
 
 helm upgrade --install dynatrace-operator oci://public.ecr.aws/dynatrace/dynatrace-operator \
     --create-namespace \
@@ -10,6 +33,7 @@ helm upgrade --install dynatrace-operator oci://public.ecr.aws/dynatrace/dynatra
 
 kubectl -n dynatrace create secret generic "${CLUSTER_NAME}" \
     --from-literal="apiToken=${OPERATOR_TOKEN}" \
-    --from-literal="dataIngestToken=${DATA_INGEST_TOKEN}"
+    --from-literal="dataIngestToken=${DATA_INGEST_TOKEN}" \
+    --dry-run=client -o yaml | kubectl apply -f -
 
 yq ".spec.apiUrl = env(CLUSTER_API_URL) | .metadata.name = env(CLUSTER_NAME)" dynakube.yaml | kubectl -n dynatrace apply -f -
