@@ -85,7 +85,7 @@
         "on": true,
         "off": false
       },
-      "defaultVariant": "off"
+      "defaultVariant": "on"
     },
     "paymentSupportedCardsProblem": {
       "description": "Supported credit card types",
