@@ -52,6 +52,13 @@ spec:
               value: flagd
             - name: FLAGD_ROLLOUT_TIMEOUT_MS
               value: "120000"
+            # Restarted on publish, in order. checkout did not recover from paymentUnreachable until it
+            # restarted, so a revert restarts it too.
+            - name: RESTART_DEPLOYMENTS
+              value: flagd,checkout
+            # Non-boolean flags the panel may toggle, as flagKey=variant used for "On".
+            - name: FLAG_ON_VARIANTS
+              value: paymentFailure=100%
             - name: ADMIN_UI_USERNAME
               valueFrom:
                 secretKeyRef:
