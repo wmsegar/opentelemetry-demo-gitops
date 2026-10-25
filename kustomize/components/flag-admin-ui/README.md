@@ -29,9 +29,15 @@ Required values:
 The admin UI now supports two actions:
 
 - `Save changes` creates or updates a PR on `admin/flag-toggles`
-- `Publish` merges the PR into the fork's `main`, updates the live `flagd-config` ConfigMap, and restarts the `flagd` deployment in `astroshop`
+- `Publish` merges the PR into the fork's `main`, updates the live `flagd-config` ConfigMap, and restarts the deployments in `RESTART_DEPLOYMENTS` in `astroshop`, one at a time and in order (default `flagd`; this component sets `flagd,checkout`)
+
+## Settings
+
+- `RESTART_DEPLOYMENTS` - comma-separated deployments to restart on publish, in order. Defaults to `FLAGD_DEPLOYMENT_NAME`. Each name must also be listed in `role.yaml`. `checkout` is included because turning `paymentUnreachable` off did not recover checkout until checkout restarted (observed 25 Oct 2026: still 100% failing 20 minutes after the revert).
+- `FLAG_ON_VARIANTS` - comma-separated `flagKey=variant` pairs that make a non-boolean flag toggleable, for example `paymentFailure=100%`. The flag must have an `off` variant and the named variant, and is only toggled while it is on one of the two. Plain on/off flags work as before.
 
 The component ships a dedicated service account and namespace-scoped RBAC so the admin service can update only:
 
 - `ConfigMap/flagd-config`
 - `Deployment/flagd`
+- `Deployment/checkout`

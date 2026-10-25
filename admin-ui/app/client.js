@@ -94,9 +94,11 @@ function renderFlags() {
     input.type = 'checkbox';
     input.checked = state.draft.get(flag.flagKey);
     input.disabled = !flag.supported || state.busy;
+    // Mapped flags say which variant "On" means, for example "On (100%)".
+    const onText = flag.onVariant && flag.onVariant !== 'on' ? `On (${flag.onVariant})` : 'On';
     input.addEventListener('change', () => {
       state.draft.set(flag.flagKey, input.checked);
-      valueText.textContent = input.checked ? 'On' : 'Off';
+      valueText.textContent = input.checked ? onText : 'Off';
       updateActionState();
     });
 
@@ -105,7 +107,7 @@ function renderFlags() {
 
     const valueText = document.createElement('span');
     valueText.className = 'toggle-text';
-    valueText.textContent = input.checked ? 'On' : 'Off';
+    valueText.textContent = input.checked ? onText : 'Off';
 
     label.appendChild(input);
     label.appendChild(slider);
@@ -197,7 +199,7 @@ async function publishChanges() {
   state.busy = true;
   updateActionState();
   renderFlags();
-  showMessage('Publishing changes: merging PR, deploying config, and restarting flagd...', 'info');
+  showMessage('Publishing changes: merging PR, deploying config, and restarting services...', 'info');
 
   try {
     const response = await fetch('/admin/api/flags/publish', {

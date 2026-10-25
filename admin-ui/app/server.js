@@ -13,6 +13,8 @@ const {
   isPublishableStatus,
   buildRestartPatch,
   hasDeploymentRolledOut,
+  parseDeploymentList,
+  parseOnVariants,
 } = require('./lib');
 
 const appBasePath = normalizeBasePath(process.env.APP_BASE_PATH || '/admin');
@@ -39,6 +41,10 @@ const config = {
   flagdDeploymentName: process.env.FLAGD_DEPLOYMENT_NAME || 'flagd',
   rolloutTimeoutMs: Number(process.env.FLAGD_ROLLOUT_TIMEOUT_MS || '120000'),
 };
+// Restarted on publish, in this order (flagd first, so restarted services read the new flags).
+config.restartDeployments = parseDeploymentList(process.env.RESTART_DEPLOYMENTS, config.flagdDeploymentName);
+// Non-boolean flags the panel may toggle, and the variant used for "on".
+config.flagOnVariants = parseOnVariants(process.env.FLAG_ON_VARIANTS);
 
 let lastPublishResult = null;
 
@@ -183,7 +189,7 @@ async function handleGetFlags() {
       path: config.flagsFilePath,
     },
     branchStatus: status,
-    flags: normalizeFlagsDocument(remoteFile.document),
+    flags: normalizeFlagsDocument(remoteFile.document, config.flagOnVariants),
   };
 }
 
@@ -198,7 +204,7 @@ async function handleApplyFlags(body) {
   const status = await getStatus();
   await ensureWorkBranch(status);
   const remoteFile = await getRemoteFile(config.githubWorkBranch);
-  const { nextDocument, changedFlags } = applyFlagUpdates(remoteFile.document, updates);
+  const { nextDocument, changedFlags } = applyFlagUpdates(remoteFile.document, updates, config.flagOnVariants);
 
   if (changedFlags.length === 0) {
     return {
@@ -256,6 +262,7 @@ async function handlePublish() {
     deployedRef: config.githubBaseBranch,
     configMapUpdated: deployResult.configMapUpdated,
     flagdRestarted: deployResult.flagdRestarted,
+    restartedDeployments: deployResult.restartedDeployments,
     rolloutStatus: deployResult.rolloutStatus,
     message: 'Merged PR and deployed updated flag configuration',
   };
@@ -270,6 +277,7 @@ async function handlePublish() {
     deployedRef: config.githubBaseBranch,
     configMapUpdated: deployResult.configMapUpdated,
     flagdRestarted: deployResult.flagdRestarted,
+    restartedDeployments: deployResult.restartedDeployments,
     rolloutStatus: deployResult.rolloutStatus,
     message: 'Merged PR and deployed updated flag configuration',
   };
@@ -430,32 +438,36 @@ async function deployFlagsDocument(serializedDocument, restartTimestamp) {
     },
   );
 
-  const patchedDeployment = await kubePatch(
-    `/apis/apps/v1/namespaces/${encodeURIComponent(config.clusterNamespace)}/deployments/${encodeURIComponent(
-      config.flagdDeploymentName,
-    )}`,
-    buildRestartPatch(restartTimestamp),
-  );
-
-  const rolloutStatus = await waitForDeploymentRollout(
-    patchedDeployment.metadata.generation,
-    restartTimestamp,
-  );
+  // One at a time, in order, each waiting for its rollout: flagd serves the new flags before the others restart.
+  const rolloutStatuses = {};
+  for (const name of config.restartDeployments) {
+    const patchedDeployment = await kubePatch(
+      `/apis/apps/v1/namespaces/${encodeURIComponent(config.clusterNamespace)}/deployments/${encodeURIComponent(name)}`,
+      buildRestartPatch(restartTimestamp),
+    );
+    rolloutStatuses[name] = await waitForDeploymentRollout(
+      name,
+      patchedDeployment.metadata.generation,
+      restartTimestamp,
+    );
+  }
 
   return {
     configMapUpdated: true,
-    flagdRestarted: true,
-    rolloutStatus,
+    flagdRestarted: config.restartDeployments.includes(config.flagdDeploymentName),
+    restartedDeployments: config.restartDeployments,
+    rolloutStatus: rolloutStatuses[config.flagdDeploymentName] || rolloutStatuses[config.restartDeployments[0]],
+    rolloutStatuses,
   };
 }
 
-async function waitForDeploymentRollout(targetGeneration, restartTimestamp) {
+async function waitForDeploymentRollout(deploymentName, targetGeneration, restartTimestamp) {
   const startedAt = Date.now();
 
   while (Date.now() - startedAt < config.rolloutTimeoutMs) {
     const deployment = await kubeGet(
       `/apis/apps/v1/namespaces/${encodeURIComponent(config.clusterNamespace)}/deployments/${encodeURIComponent(
-        config.flagdDeploymentName,
+        deploymentName,
       )}`,
     );
 
@@ -480,7 +492,7 @@ async function waitForDeploymentRollout(targetGeneration, restartTimestamp) {
     await sleep(2000);
   }
 
-  throw new Error(`Timed out waiting for deployment ${config.flagdDeploymentName} to roll out`);
+  throw new Error(`Timed out waiting for deployment ${deploymentName} to roll out`);
 }
 
 async function kubeGet(pathname) {

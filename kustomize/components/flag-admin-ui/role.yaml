@@ -20,6 +20,7 @@ rules:
       - deployments
     resourceNames:
       - flagd
+      - checkout
     verbs:
       - get
       - patch
