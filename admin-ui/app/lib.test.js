@@ -126,3 +126,79 @@ test('hasDeploymentRolledOut recognizes ready deployments', () => {
     false,
   );
 });
+
+const {
+  getToggleVariants,
+  parseDeploymentList,
+  parseOnVariants,
+} = require('./lib');
+
+test('without an on-variant mapping, non-boolean flags stay unsupported (unchanged behaviour)', () => {
+  const flags = normalizeFlagsDocument(buildDocument());
+  const complexFlag = flags.find((flag) => flag.flagKey === 'paymentFailure');
+  assert.equal(complexFlag.supported, false);
+  assert.equal(complexFlag.onVariant, null);
+  assert.throws(
+    () => applyFlagUpdates(buildDocument(), [{ flagKey: 'paymentFailure', enabled: true }]),
+    /not a supported on\/off toggle/,
+  );
+});
+
+test('boolean flags toggle on/off as before, mapping or not', () => {
+  const onVariants = parseOnVariants('paymentFailure=100%');
+  const { nextDocument, changedFlags } = applyFlagUpdates(
+    buildDocument(),
+    [{ flagKey: 'productCatalogFailure', enabled: true }],
+    onVariants,
+  );
+  assert.deepEqual(changedFlags, ['productCatalogFailure']);
+  assert.equal(nextDocument.flags.productCatalogFailure.defaultVariant, 'on');
+  assert.deepEqual(getToggleVariants('productCatalogFailure', buildDocument().flags.productCatalogFailure, onVariants), {
+    on: 'on',
+    off: 'off',
+  });
+});
+
+test('a mapped flag toggles between its on variant and off', () => {
+  const onVariants = parseOnVariants('paymentFailure=100%');
+  const normalized = normalizeFlagsDocument(buildDocument(), onVariants).find((flag) => flag.flagKey === 'paymentFailure');
+  assert.equal(normalized.supported, true);
+  assert.equal(normalized.enabled, false);
+  assert.equal(normalized.onVariant, '100%');
+
+  const on = applyFlagUpdates(buildDocument(), [{ flagKey: 'paymentFailure', enabled: true }], onVariants);
+  assert.deepEqual(on.changedFlags, ['paymentFailure']);
+  assert.equal(on.nextDocument.flags.paymentFailure.defaultVariant, '100%');
+  assert.equal(normalizeFlagsDocument(on.nextDocument, onVariants).find((f) => f.flagKey === 'paymentFailure').enabled, true);
+
+  const off = applyFlagUpdates(on.nextDocument, [{ flagKey: 'paymentFailure', enabled: false }], onVariants);
+  assert.equal(off.nextDocument.flags.paymentFailure.defaultVariant, 'off');
+});
+
+test('a mapped flag is not toggleable when the variant is missing or another variant is active', () => {
+  const doc = buildDocument();
+  assert.equal(getToggleVariants('paymentFailure', doc.flags.paymentFailure, { paymentFailure: '50%' }), null);
+  assert.equal(getToggleVariants('paymentFailure', doc.flags.paymentFailure, { paymentFailure: 'off' }), null);
+  doc.flags.paymentFailure.variants['50%'] = 0.5;
+  doc.flags.paymentFailure.defaultVariant = '50%';
+  assert.equal(getToggleVariants('paymentFailure', doc.flags.paymentFailure, { paymentFailure: '100%' }), null);
+});
+
+test('parseOnVariants reads flagKey=variant pairs and rejects malformed entries', () => {
+  assert.deepEqual(parseOnVariants(''), {});
+  assert.deepEqual(parseOnVariants(undefined), {});
+  assert.deepEqual(parseOnVariants(' paymentFailure=100% , imageSlowLoad=10sec '), {
+    paymentFailure: '100%',
+    imageSlowLoad: '10sec',
+  });
+  assert.throws(() => parseOnVariants('paymentFailure'), /expected flagKey=variant/);
+  assert.throws(() => parseOnVariants('=100%'), /expected flagKey=variant/);
+});
+
+test('parseDeploymentList keeps order, removes duplicates, defaults to the fallback and validates names', () => {
+  assert.deepEqual(parseDeploymentList('', 'flagd'), ['flagd']);
+  assert.deepEqual(parseDeploymentList(undefined, 'flagd'), ['flagd']);
+  assert.deepEqual(parseDeploymentList('flagd, checkout,flagd', 'flagd'), ['flagd', 'checkout']);
+  assert.throws(() => parseDeploymentList('flagd,Checkout', 'flagd'), /Invalid deployment name/);
+  assert.throws(() => parseDeploymentList('../secrets', 'flagd'), /Invalid deployment name/);
+});
